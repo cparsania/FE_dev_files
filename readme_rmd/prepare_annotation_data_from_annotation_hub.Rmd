@@ -1,0 +1,346 @@
+---
+title: "Prepare annotation data from annotation hub"
+author: "Chirag Parsania"
+date: "7/11/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## load libraries  
+```{r , message=FALSE}
+library(AnnotationHub)
+library(tidyverse)
+```
+
+##  Get familiar with AnnotationHub
+```{r}
+
+hub <- AnnotationHub()
+print(hub)
+
+```
+
+## hub summary 
+```{r}
+message(hub@hub)
+message(hub@cache)
+
+message(hub@date)
+
+message(hub@isLocalHub)
+message(hub@.db_path)
+message(hub@.db_index)
+print(hub@.db_uid %>% head)
+
+message(c("Total number of object in the hub : ",   hub@.db_uid %>% length() ))
+```
+
+## Generate a tibble of hub summary, where rows represent unique hub object and columns are hub attribute.
+
+```{r}
+
+hub_master_tbl <- tibble(ah_id = hub$ah_id , 
+                            title = hub$title , 
+                            dataprovider = hub$dataprovider , 
+                            species = hub$species , 
+                            taxonomyid = hub$taxonomyid , 
+                            genome = hub$genome , 
+                            description = hub$description , 
+                            coordinate_1_based = hub$coordinate_1_based , 
+                            maintainer = hub$maintainer , 
+                            rdatadateadded = hub$rdatadateadded , 
+                            preparerclass = hub$preparerclass , 
+                            tags = hub$tags , 
+                            rdataclass = hub$rdataclass , 
+                            rdatapath = hub$rdatapath, 
+                            sourceurl = hub$sourceurl , 
+                            sourcetype = hub$sourcetype) #%>% filter(ah_id != "AH65173")
+
+hub_master_tbl %>% glimpse()
+```
+
+## Are ah_id unique ?
+
+```{r}
+hub_master_tbl %>% summarise(nrow = n() , distinct_ah_id = n_distinct(ah_id))
+
+```
+
+Total number of rows equal to distinct_ah_id is the indication that all ah_id are unique 
+
+##  What are the different species ?
+
+```{r}
+hub_count_by_species <- hub_master_tbl %>% group_by(species) %>% summarise(number_of_ah_objects = n()) %>% arrange(desc(number_of_ah_objects))
+
+top_n <- 20
+hub_count_by_species %>% slice(1:top_n) %>% ggplot(aes(x = fct_reorder(species , number_of_ah_objects) , y = number_of_ah_objects)) + geom_bar(stat = "identity") + coord_flip() + xlab("Species") + theme_bw() + theme(text = element_text(size = 12))
+```
+
+
+## What are the hub data provider  
+
+```{r}
+hub_data_provider <- hub_master_tbl %>% group_by(dataprovider) %>% tally(sort = T) 
+
+hub_data_provider %>% ggplot(aes(x = fct_reorder(dataprovider , n) , y = n))  + geom_bar(stat = "identity") + coord_flip() +
+  xlab("Species") + theme_bw() + theme(text = element_text(size = 12))
+
+```
+
+## Type of objects available in the annotation hub
+
+```{r}
+hub_master_tbl %>%  group_by(rdataclass)  %>% tally(sort = T) %>%  
+  ggplot(aes(x = fct_reorder(rdataclass , n) , y = n))  + geom_bar(stat = "identity") + coord_flip() +
+  xlab("Species") + theme_bw() + theme(text = element_text(size = 12))
+```
+
+## Explore fungiDB data 
+
+```{r}
+hub_fungidb <- hub_master_tbl %>% filter(dataprovider == "FungiDB")
+
+hub_fungidb %>% glimpse()
+```
+
+## Hub FungiDB keep only which have both OrgDB and GRanges from FungiDB-42
+
+```{r}
+hub_fungidb_v42 <- hub_fungidb  %>% filter(rdataclass == "OrgDb" | rdataclass == "GRanges")%>% 
+  filter(grepl("FungiDB-42" , genome)) 
+
+hub_fungidb_v42 %>% glimpse()
+
+hub_fungidb_v42 %>% group_by(rdataclass) %>% tally()
+
+```
+
+## What are the fungal species available ?
+
+```{r}
+hub_fungidb_v42$species %>% unique()  %>% sort()
+
+```
+
+## Download Fungi Db V42 GRanges and OrgDb
+
+```{r,eval=TRUE}
+
+hub_fungidb_v42_wide <- hub_fungidb_v42 %>% 
+    dplyr::select(ah_id, genome, species, taxonomyid,rdataclass) %>% 
+    spread(key = rdataclass, value = ah_id) %>% drop_na()
+
+```
+OrgDB and GRanges objects from fungidb have been downloaded (see `script job_download_ah_data.R`). For future use, they will be loaded from the chache dir. 
+
+
+## Get OrgDb and GRanges in R env
+
+Make sure you use cached hub data (OrgDb and GRanges) because downloading will take long. 
+
+```{r , message=FALSE , warning=FALSE, eval=FALSE}
+
+
+## Columns of interest 
+hub_orgdb_cols <- c("GID" , "GO_GO_ID" , "GO_GO_TERM_NAME" , "GO_EVIDENCE_CODE", "GO_ONTOLOGY")
+hub_granges_cols <- c("seqnames","start","end","width", "strand", "description","type","ID")
+
+
+ah_data_summary2 <- hub_fungidb_v42_wide %>% 
+    #dplyr::slice(1:3)%>%  ## test first few species 
+    mutate(meta_data = map2(OrgDb, GRanges , function(i, j) {
+      
+      my_species_orgdb_cols <- tryCatch({
+      
+        orgdb <- hub[[i]]  
+        orgdb_cols <- AnnotationDbi::select(orgdb , 
+                                                     keys = keys(orgdb) , columns =  hub_orgdb_cols, keytypes = "GID") %>% 
+        as_tibble() %>% 
+        dplyr::rename( "GO_ID" = "GO_GO_ID" , 
+                 "GO_TERM_NAME" = "GO_GO_TERM_NAME", 
+                 "EVIDENCE_CODE" = "GO_EVIDENCE_CODE" , 
+                 "ONTOLOGY" = "GO_ONTOLOGY" )
+      } , error = function(x){
+        return(NULL)
+      })
+      
+      my_species_gr_cols <- tryCatch({
+      
+        granges <- hub[[j]]
+      
+        gr_cols <- granges %>% 
+        as_tibble() %>% 
+        dplyr::select(hub_granges_cols)  %>% 
+        filter(type == "gene") %>% 
+        dplyr::select(-type)
+        
+      }, error = function(x){
+        return(NULL)
+      })
+      
+      return(tibble(orgdb_cols = list(my_species_orgdb_cols), gr_cols = list(my_species_gr_cols)))
+      
+    }))
+
+## clean data. remove species if one of the OrgDB or GRanges is NULL 
+ah_data_summary22 <- ah_data_summary2 %>% 
+  tidyr::unnest() %>% 
+  dplyr::filter(map2_lgl(orgdb_cols, gr_cols , ~ ! any(is.null(.x) , is.null(.y))) %>% as.logical())  
+
+
+species_table <- ah_data_summary22 %>% dplyr::select(genome, species, taxonomyid)
+
+## save data
+## readr::write_rds(ah_data_summary22 , path  = "../../app/annotations/fungi_db_orgdb_derieved_go_data.rds")
+## readr::write_rds(species_table , path = "../../app/annotations/fungi_db_species_info.rds")
+```
+
+## Add OrgDB and GRanges from  local files 
+Local objects have been obtained directly from authors. Ideally, all of them must be present in the annotation hub. However, *Candida glabrata* , *Candida auris* is not available through hub. Add it from locals.
+
+```{r, eval = FALSE}
+## add local species  : Candida glabrata 
+# install.packages("../../../fungi_db_R_objects/orgdb/org.Cglabrata.CBS.138.v42.eg.db_2019.03.tar.gz",repos=NULL , type = "source")
+
+
+# library("org.Cglabrata.CBS.138.v42.eg.db")
+# load("../../../fungi_db_R_objects/granges/GRanges.Candida.glabrata.CBS.138.v42.rda")
+
+
+
+## add local species  : Candida auris
+
+#install.packages("../../../fungi_db_R_objects/orgdb/org.Cauris.B8441.v42.eg.db_2019.03.tar.gz",repos=NULL , type = "source") 
+library(org.Cauris.B8441.v42.eg.db)
+load("../../../fungi_db_R_objects/granges/GRanges.Candida.auris.B8441.v42.rda")
+
+query_to_add <- "org.Cauris.B8441.v42.eg.db"
+
+orgdb_cols <- AnnotationDbi::select(org.Cauris.B8441.v42.eg.db, 
+                                    keys = keys(org.Cauris.B8441.v42.eg.db) , columns =  hub_orgdb_cols, keytypes = "GID") %>% 
+        as_tibble() %>% 
+        dplyr::rename( "GO_ID" = "GO_GO_ID" , 
+                 "GO_TERM_NAME" = "GO_GO_TERM_NAME", 
+                 "EVIDENCE_CODE" = "GO_EVIDENCE_CODE" , 
+                 "ONTOLOGY" = "GO_ONTOLOGY" )
+
+gr_cols  <- GRanges.Candida.auris.B8441.v42 %>% as_tibble() %>% dplyr::select(hub_granges_cols) %>% filter(type == "gene") %>% 
+        dplyr::select(-type)
+
+
+### add this data to master obj 
+ah_data_summary22 <- read_rds("../../app/annotations/fungi_db_orgdb_derieved_go_data.rds")
+glimpse(ah_data_summary22)
+
+genome_version = "FungiDB-42_CaurisB8441"
+spname = "Candida auris B8 441"
+tid = 498019
+
+ah_data_summary22 <- ah_data_summary22 %>% dplyr::add_row(genome = genome_version , 
+                                                          species  = spname  , 
+                                                          taxonomyid= tid, 
+                                     GRanges = NA ,
+                                     OrgDb = NA ,
+                                     orgdb_cols = list(orgdb_cols) , 
+                                     gr_cols = list(gr_cols) ) %>% arrange(species)
+  
+
+species_table  <- read_rds ("../../app/annotations/_fungi_db_species_info.rds")
+
+species_table <- species_table %>% 
+  dplyr::add_row(genome = genome_version , species  = spname , taxonomyid=tid) %>% 
+  arrange(species)
+
+
+## save data
+ readr::write_rds(ah_data_summary22 , path  = "../../app/annotations/fungi_db_orgdb_derieved_go_data.rds")
+ readr::write_rds(species_table , path = "../../app/annotations/fungi_db_species_info.rds")
+```
+
+
+
+
+
+
+
+
+```{r , eval=FALSE}
+
+
+# supporting function to download fungidb data 
+## prepare fungidb data GO and Chromosomal coord 
+## GO from orgdb object and chromosomal coord from GRanges 
+
+#' Title
+#'
+#' @return
+#' @export
+#'
+#' @examples
+download_fungi_db_annotations  <- function(){
+  
+  #library(AnnotationHub)
+  #object_type <- "orgdb"
+  data_provider <-"fungidb"  #"ftp://ftp.ncbi.nlm.nih.gov/gene/DATA/"
+  filter_tags = c(data_provider)  
+  
+  hub <- AnnotationHub()
+  hub_subset <- query(hub , filter_tags)
+  
+  ## prepare summary table for annotation objects 
+  ah_data_summary <- tibble(ah_id = hub_subset$ah_id , 
+                            title = hub_subset$title , 
+                            dataprovider = hub_subset$dataprovider , 
+                            species = hub_subset$species , 
+                            taxonomyid = hub_subset$taxonomyid , 
+                            genome = hub_subset$genome , 
+                            description = hub_subset$description , 
+                            coordinate_1_based = hub_subset$coordinate_1_based , 
+                            maintainer = hub_subset$maintainer , 
+                            rdatadateadded = hub_subset$rdatadateadded , 
+                            preparerclass = hub_subset$preparerclass , 
+                            tags = hub_subset$tags , 
+                            rdataclass = hub_subset$rdataclass , 
+                            rdatapath = hub_subset$rdatapath, 
+                            sourceurl = hub_subset$sourceurl , 
+                            sourcetype = hub_subset$sourcetype) %>% filter(ah_id != "AH65173")
+  
+  ## re arrange summary data 
+  ah_data_summary <- ah_data_summary %>% 
+    dplyr::select(ah_id, genome, species, taxonomyid,rdataclass) %>% 
+    spread(key = rdataclass, value = ah_id) %>% drop_na()
+  
+  ## from each orgdb get columns of interest 
+  orgdb_cols <- c("GID", "GENEDESCRIPTION", "GO_ID" , "GO_TERM_NAME", "EVIDENCE_CODE" , "ONTOLOGY")
+  granges_cols <- c("seqnames","start","end","width", "strand", "description","type","ID")
+  
+  ah_data_summary2 <- ah_data_summary %>% 
+    #dplyr::slice(1:3)%>%  ## test first few species 
+    mutate(meta_data = map2(OrgDb, GRanges , function(i, j) {
+      my_species_orgdb <- hub_subset[[i]]
+      my_species_orgdb_cols <- AnnotationDbi::select(my_species_orgdb , keys = keys(my_species_orgdb) , columns =  orgdb_cols, keytypes = "GID") %>% 
+        as_tibble()
+      
+      my_species_granges <- hub_subset[[j]]
+      
+      my_species_gr_cols <- my_species_granges %>% as_tibble() %>% dplyr::select(granges_cols)  %>% filter(type == "gene") %>% 
+        dplyr::select(-type)
+      
+      return(tibble(orgdb_cols = list(my_species_orgdb_cols), gr_cols = list(my_species_gr_cols)))
+    }))
+  
+  ah_data_summary2 <- ah_data_summary2 %>% unnest() 
+  
+  species_table <- ah_data_summary2 %>% dplyr::select(genome, species, taxonomyid)
+  
+  ## save data
+  save(ah_data_summary2 , file = "./app/annotations/fungi_db_orgdb_derieved_go_data.RData")
+  save(species_table , file = "./app/annotations/fungi_db_species_info.RData")
+  
+}
+
+```

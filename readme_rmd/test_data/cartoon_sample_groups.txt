@@ -1,0 +1,11 @@
+groups	group_members
+s_grp_1	Test_col_1
+s_grp_2	Test_col_2
+s_grp_4	Test_col_3
+s_grp_4	Test_col_4
+s_grp_1	Test_col_5
+s_grp_1	Test_col_6
+s_grp_3	Test_col_7
+s_grp_3	Test_col_8
+s_grp_2	Test_col_9
+s_grp_1	Test_col_10

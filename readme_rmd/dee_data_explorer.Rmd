@@ -1,0 +1,264 @@
+---
+title: "Digital expression explorer data stats"
+author: "Chirag Parsania"
+date: "7/1/2019"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE  )
+```
+
+
+### Load library
+```{r, include=TRUE, warning=FALSE,message=FALSE}
+library(tidyverse)
+```
+
+### Let's have a look to Dee derieved SRA meta data
+
+DEE SRA meta data is given under the file name *_accession.tsv 
+
+```{r, include=TRUE  , warning=TRUE, message=FALSE}
+
+data_dir <- "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/dee_data/Scerevisiae/"
+dee_meta_data_file <- list.files(data_dir , pattern = "*_accessions.tsv$" , full.names = T)
+dee_sra_meta_data <- read_delim(file = dee_meta_data_file , delim = "\t") %>% as_tibble()
+glimpse(dee_sra_meta_data)
+```
+
+
+### Number of unique samples by different  accession
+
+By SRR_accession : `r dee_sra_meta_data %>% summarise(n_distinct(SRR_accession))`
+
+ By  SRX_accession :`r dee_sra_meta_data %>% summarise(n_distinct(SRX_accession))`
+
+ By  SRP_accession : `r dee_sra_meta_data %>% summarise(n_distinct(SRP_accession))`
+
+ By  GSE_accession : `r dee_sra_meta_data %>% summarise(n_distinct(GSE_accession))`
+
+ By  GSM_accession :`r dee_sra_meta_data %>% summarise(n_distinct(GSM_accession))`
+
+ 
+As **SRR_accession** is equal to the number of rows in the table (sra_meta_data), **SRR_accession** will be considered as primary id. 
+
+### Problem 
+
+The meta data given with dee under file name *_accessions.tsv does not have some of the important columns such as   
+
+  1. genotype  
+  2. strain  
+  3. title  
+  4. description  
+  5. ......  
+  6. ......  
+
+
+These columns are very important for FungiExpresZ user query search. Something needs to be done to derieve these columns. 
+
+### Solution 
+### Steps to follow
+
+* To get the desired meta data columns go through the steps given below. 
+
+**Aim : **  Our aim here is to dowmload meta data information for **all fungal samples**. 
+  
+  1. Go to [https://www.ncbi.nlm.nih.gov/sra] SRA
+  2. Search key word "fungi"
+  3. From the top right select  option "type_rnaseq" and filter "RNA" from the top left 
+  4. **sra_run_table** can be downloaded by selecting the option `send to --> Run selector`. By default, NCBI only allow first 20k samples to send Run selector. To deal with this, data must be send into chunks to the `Run selector`.
+  **How to define the chunks** ??? Selecting txonomic groups (bottom right on SRA page) with < 20k samples  helps to deal with this situation.
+  5. Here, **sra_run_table** downloaded in to three different files. One thing to notice here is all three files does not have identical number of columns. 
+
+
+### Let's have a look to SraRunTable data
+
+### Import & Clean
+
+```{r}
+run_info_file <- list.files(path = "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/sra_run_info/", pattern = "*SraRunTable*" ,full.names = T ) 
+
+cat(run_info_file ,sep = "\n")
+
+
+fungal_sra_run_table <- run_info_file %>% 
+  tibble(files = . ) %>%  ## get files in to tibble 
+  mutate(data = purrr::map( files ,  ~( data.table::fread(. ,sep = "\t", quote="") %>% ## read data and make them to a single tibble 
+                                          as_tibble() %>% gather(var, val,-Run)) )  ) %>% 
+  unnest() %>% 
+  dplyr::select(-files) %>% 
+  unique() %>% 
+  spread(var, val) %>% 
+  janitor::clean_names() %>%
+  readr::type_convert()
+glimpse(fungal_sra_run_table) 
+```
+
+### Save `fungal_sra_run_table` object to .rds file for later use
+
+```{r , eval=FALSE}
+readr::write_rds(x = fungal_sra_run_table , path = "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/sra_run_info/fungal_sra_run_info_table.rds" ,compress = "gz")
+```
+
+
+### Visually summarise `fungal_sra_run_table`
+
+### Is column `run` has unique elements ? 
+```{r}
+fungal_sra_run_table  %>%
+  dplyr::select(run) %>% group_by(run) %>% tally() %>% summarise(n_distinct(n))
+
+```
+  n_distinct(n) = 1 suggest column `run` has unique values 
+
+
+### Are these data only RNA-seq ?
+```{r}
+seq_techno <- fungal_sra_run_table %>% group_by(assay_type) %>%tally(sort = T)
+seq_techno %>% ggplot() + geom_bar(aes(x = fct_reorder(assay_type , n) , y = n) , stat = "identity") +coord_flip()+
+  theme_bw() + theme(text = element_text(size = 12)) + xlab("Assay type")
+
+```
+
+### Plot top species by number of SRA RUN
+```{r}
+count <- fungal_sra_run_table  %>%
+  dplyr::select(organism_2 ) %>% dplyr::add_count(organism_2) %>% unique() %>% arrange(desc(n)) 
+
+count %>% dplyr::slice(1:10) %>% ggplot(aes(x =  fct_reorder(organism_2 , n), y = n)) + 
+  geom_bar(stat = "identity") + coord_flip() + xlab("Species") + theme_bw() + theme(text = element_text(size = 15))
+```
+
+### Number of the samples sequenced over the year with different technology
+
+```{r }
+
+fungal_sra_run_table %>% dplyr::select(load_date, instrument) %>% dplyr::mutate(year = lubridate::year(load_date)) %>% group_by(year) %>% add_count(sort = T) %>% 
+  ggplot(aes(x = fct_reorder(as.character(year) , year))) + 
+  geom_bar( aes(fill = instrument) , position = "stack") + coord_flip() + theme_bw() + theme(text = element_text(size = 15) ,legend.text = element_text(size = 8)) + xlab("Year")
+```
+
+***
+
+### Now We have explored data enough. Let's address original problem
+
+### The next task is to prepare the gene expression table of dee data
+
+### Prepare dee gene expression data and save into .rds objects. 
+
+
+```{r , eval=FALSE}
+dee_gene_expression_file <- "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/dee_data/Scerevisiae/scerevisiae_ke.tsv"
+dee_gene_expression_mat <- data.table::fread(dee_gene_expression_file,sep = "\t")
+dee_long <- dee_gene_expression_mat %>% 
+  as_tibble() %>%
+  mutate(V3 = log2(V3+1)) %>%
+  mutate(org = "s_cerevisiae") %>%
+  dplyr::rename("sample_name" = "V1" ,"geneName" = "V2" , "log2fpkm" = "V3") %>%
+  filter(sample_name %in% fungal_sra_run_table$run) %>% ## keep those only, which has run information given in the fungal_run_table
+  select(org , everything())
+
+## save long
+readr::write_rds(x = dee_long , path = "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/dee_data/Scerevisiae/dee_long.rds" ,compress = "gz")
+
+## save wide 
+dee_wide <- dee_long %>% dplyr::select(-org) %>% spread(sample_name , log2fpkm)
+readr::write_rds(x = dee_wide , path = "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/dee_data/Scerevisiae/dee_wide.rds" ,compress = "gz")
+
+## save dee SRA data accession 
+dee_sra_accession <- dee_wide %>% colnames()%>% .[-1] %>% unique()
+readr::write_rds(x = dee_sra_accession , path ="/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/dee_data/Scerevisiae/dee_sra_accession.rds" ,compress = "gz")
+```
+
+
+### Dee data wide format loading time
+
+```{r, eval=FALSE}
+start_time <- Sys.time()
+dee_expr_data <- readr::read_rds("/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/dee_data/Scerevisiae/dee_wide.rds")
+start_time - Sys.time()
+```
+### Dee data long format loading time
+
+```{r , eval=FALSE}
+start_time <- Sys.time()
+dee_expr_data <- readr::read_rds("/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/dee_data/Scerevisiae/dee_long.rds")
+start_time - Sys.time()
+
+```
+
+
+### Prepare final sample info of Dee data
+
+As fungal_sra_run_table contains many unnecessary columns, keep those which are informative.
+
+```{r}
+required_cols <- c("organism_2",
+                   "strain",
+                   "title",
+                   "description",
+                   "growth_condition",
+                   "treatment",
+                   "genotype",
+                   "feature",
+                   "experiment",
+                   "host",
+                   "temperature",
+                   "geo_loc_name",
+                   "insert_size",
+                   "instrument",
+                   "isol_growth_condt",
+                   "library_name",
+                   "library_layout",
+                   "collection_date",
+                   "run",
+                   "bio_project",
+                   "bio_sample",
+                   "sample_name",
+                   "sra_sample",
+                   "sra_study")
+
+dee_accession <- readr::read_rds("/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/dee_data/Scerevisiae/dee_sra_accession.rds")
+
+dee_data_sample_info <- fungal_sra_run_table %>% 
+  filter(fungal_sra_run_table$run %in%  dee_accession) %>% ## keep those only, which has run information given in the fungal_run_table
+  select(required_cols) 
+
+dee_data_sample_info %>% glimpse()
+```
+
+
+### Save dee data sample info
+```{r , eval = FALSE}
+
+readr::write_rds(x = dee_data_sample_info,  path ="/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/dee_data/Scerevisiae/dee_data_sample_info.rds")
+```
+
+
+## Conclusions  
+####  1. Dee data expression mat saved in long and wide format 
+####  2. SRA all fungus run info table downloaded and saved as .rds 
+####  3. Dee data run info prepared and saved in the .rds data 
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+
+
+
+
+
+
+
+
+

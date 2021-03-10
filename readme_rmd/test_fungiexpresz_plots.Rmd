@@ -1,0 +1,240 @@
+---
+title: "Test FungiexpresZ plots"
+author: "Chirag Parsania"
+date: "8/26/2019"
+output: html_document
+params:
+  species: "Aspergillus nidulans"
+  gene_expr_mat: "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_new/a_nidulans_expr_mat.rds"
+  sra_sample_info: "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_new/sample_info.rds"
+  out_dir: "./test_data"
+  n_random_study:  3
+  n_genes: 10000
+  n_samples: 10
+  n_gene_groups: 4
+  n_sample_groups: 3
+  eval_heatmap: FALSE
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE , tidy = T , message = F)
+library(tidyverse)
+```
+
+
+## Test heatmaps for *`r params$species`*
+
+Create a cartoon data and test them for below purposes 
+
++ Normal heatmap no clustering 
++ Heatmap with clustering 
++ Heatmap with gene groups 
++ Heatmap with sample groups 
++ Heatmap with column annotations (Groups)
++ Heatmap with joined data  
+
+
+#### Create cartoon data  
+
+```{r}
+set.seed(1234)
+cartoon_data <- matrix(rnorm(params$n_genes * params$n_samples ) , nrow = params$n_genes)
+```
+#### Assign column names  
+
+```{r}
+colnames(cartoon_data) <- paste("Test_col" , 1:ncol(cartoon_data) , sep = "_")
+```
+
+#### Assign row names  
+
+Use *`r params$species`* gene names as row names. So, it can be used to test join data feature as well. 
+
+```{r}
+gene_expr_mat <-  readr::read_rds(params$gene_expr_mat)
+n_random_genes <- sample(gene_expr_mat %>% pull(1) , size = params$n_genes)
+rownames(cartoon_data) <- n_random_genes
+```
+
+#### Create cartoon sample groups 
+
+```{r}
+sample_groups <- factor(paste("s_grp" , 1:params$n_sample_groups,sep = "_")) %>% 
+                                      sample(. , size = params$n_samples,replace = T) 
+                                      
+sample_grp_tbl <- tibble(groups = sample_groups , group_members = colnames(cartoon_data))
+
+```
+
+#### Create cartoon gene groups 
+
+```{r}
+gene_groups <- factor(paste("g_grp" , 1:params$n_gene_groups,sep = "_")) %>% 
+                                      sample(. , size = params$n_genes,replace = T)
+                                      
+gene_grp_tbl <- tibble(groups = gene_groups , group_members = rownames(cartoon_data))
+```
+
+
+#### Prepare data to be joined
+
+```{r}
+sample_info <- read_rds(params$sra_sample_info) %>% filter(species == params$species)
+selected_bio_project_id <- sample(sample_info$bio_project , params$n_random_study)
+
+```
+
+Selected bio projects are `r selected_bio_project_id`
+
+#### Get SRA data for selected studies 
+
+```{r}
+
+query_sra_run_id <- sample_info %>% filter(.$bio_project %in%  selected_bio_project_id) %>% pull(run_accession)
+query_sra_expr_mat  <-  gene_expr_mat %>% dplyr::select(1,query_sra_run_id)
+
+```
+
+#### Create joined data 
+```{r}
+joined_data <- cartoon_data %>% as.data.frame() %>% rownames_to_column("geneName") %>% 
+  left_join(query_sra_expr_mat ) 
+
+joined_data_mat <- joined_data %>% as.data.frame() %>% column_to_rownames("geneName") %>% as.matrix()
+```
+
+#### Save necessary data to file
+
+```{r , eval=TRUE}
+dir.create(path = params$out_dir)  
+
+get_path_for_out_dir <- as_mapper(~paste(params$out_dir, .x , sep = "/"))
+
+readr::write_delim(cartoon_data %>% as.data.frame() %>% rownames_to_column("geneName"), 
+                   path = get_path_for_out_dir("cartoon_data.txt") , delim = "\t")
+readr::write_delim(joined_data , 
+                   path = get_path_for_out_dir("joined_data.txt") , delim = "\t")
+readr::write_delim(sample_grp_tbl , 
+                   path = get_path_for_out_dir("cartoon_sample_groups.txt") , delim = "\t")
+
+readr::write_delim(query_sra_expr_mat , 
+                   path = get_path_for_out_dir("sra_data.txt") , delim = "\t")
+
+readr::write_delim(gene_grp_tbl ,
+                   path = get_path_for_out_dir("cartoon_gene_groups.txt") , delim = "\t")
+
+```
+
+
+## Plot 1: Heatmap no cluster 
+
+```{r,eval=FALSE}
+ComplexHeatmap::Heatmap(cartoon_data ,cluster_rows = F , cluster_columns = F)
+```
+
+
+## Plot 2: Heatmap with row cluster 
+
+```{r,echo=TRUE,eval=FALSE}
+ComplexHeatmap::Heatmap(cartoon_data ,cluster_rows = T , cluster_columns = F)
+```
+
+## Plot 3: Heatmap with column cluster
+```{r , echo=TRUE,eval=FALSE}
+ComplexHeatmap::Heatmap(cartoon_data ,cluster_rows = F , cluster_columns = T)
+```
+
+
+## Plot 4: Heatmap with kmeans 
+
+```{r, echo=TRUE,eval=FALSE}
+set.seed(1234)
+ComplexHeatmap::Heatmap(cartoon_data ,cluster_rows = F , cluster_columns = F, row_km = 3 , column_km = 3)
+```
+
+
+## Plot 5: Joined data heatmap
+
+```{r,eval=FALSE}
+ComplexHeatmap::Heatmap(joined_data_mat)
+
+```
+
+## Plot 6: Joined data heatmap with kmeans
+
+```{r,eval=FALSE}
+set.seed(1234)
+ComplexHeatmap::Heatmap(joined_data_mat , column_km = 3, row_km = 3 , cluster_column_slices = F , cluster_row_slices = F)
+
+```
+
+## Plot 7: Heatmap with column groups top annotations 
+
+```{r,eval=FALSE}
+## elow function create default gg plot style colors
+get_gg_colors <- function(x){
+  #x <- letters
+  colrs <- scales::hue_pal()(length(x))
+  rlang::set_names(colrs , x)
+}
+
+## prepare top annot 
+ hm_selected_column_groups <- joined_data_mat %>% 
+          colnames() %>% 
+          tibble(hm_cols = .  ) %>% 
+          left_join(sample_grp_tbl , by = c(hm_cols =  "group_members")) %>%   
+          pull(groups) %>%  as.character() %>% 
+          replace_na("NA")
+ 
+## color by column groups 
+grp_colors <- get_gg_colors(x = hm_selected_column_groups %>% as_factor() %>% levels())
+
+## prepare top annot         
+column_ha = ComplexHeatmap::HeatmapAnnotation(Groups =  hm_selected_column_groups , col = list(Groups = grp_colors))
+
+## heatmap 
+ComplexHeatmap::Heatmap(joined_data_mat , top_annotation = column_ha , 
+                        cluster_columns = F , cluster_rows = F , cluster_column_slices = F)
+        
+```
+
+## Plot 8 : Heatmap split by column groups
+```{r,eval=FALSE}
+
+ComplexHeatmap::Heatmap(joined_data_mat , top_annotation = column_ha , 
+                        cluster_columns = F , cluster_rows = F , cluster_column_slices = F , 
+                        column_split = hm_selected_column_groups)
+```
+
+## Plot 9 : Heatmap split by gene groups 
+
+```{r,eval=FALSE}
+ComplexHeatmap::Heatmap(joined_data_mat , row_split = gene_grp_tbl$groups , 
+                        cluster_columns = F, cluster_rows = F, cluster_row_slices = F)
+```
+
+
+## Plot 10 : Heatmap joined data split by sample groups and gene groups 
+
+```{r,eval=FALSE}
+
+ComplexHeatmap::Heatmap(joined_data_mat , 
+                        row_split = gene_grp_tbl$groups , 
+                        column_split = hm_selected_column_groups,
+                        cluster_columns = T, cluster_rows = T, 
+                        cluster_row_slices = F , top_annotation = column_ha)
+```
+
+
+
+
+
+
+
+
+
+
+
+

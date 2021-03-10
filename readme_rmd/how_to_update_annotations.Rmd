@@ -1,0 +1,146 @@
+---
+title: "Update annotations"
+author: "Chirag Parsania"
+date: "7/12/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## load library
+```{r , message=FALSE , warning=FALSE}
+library(tidyverse)
+```
+
+
+## This document is about what are the changes need to be done to update the annotations in FungiExpresZ.
+
+* Following files need to be changed
+  + fungi_db_orgdb_derieved_go_data.rds
+  + fungi_db_species_info.rds
+  + reference_annotation_to_expr_map.rds
+  
+## let's have a look in to above files 
+
+```{r}
+fungi_db_orgdb_derieved_go_data <- read_rds("/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/annotations/fungi_db_orgdb_derieved_go_data.rds")
+```
+
+In the above file, change the columns `genome`,  `orgdb_cols` and `gr_cos`. Refer prepare_annotation_data_from_annotation_hub.rmd file to know more about how to update OrgDb and GRanges. The column `genome` indicates the current version of annotations and it must have unique values. 
+
+
+## update genome version in existing sample info 
+
+Before updating, Let's have look into existing sample_info.rds.
+
+```{r}
+existing_sample_info <- read_rds("/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_new/sample_info.rds")
+existing_sample_info %>% glimpse()
+```
+The column `reference_annot` need to update. It must be identical to the `genome` in the  fungi_db_orgdb_derieved_go_data.rds
+
+
+## Let's update the column `reference_annot` 
+
+```{r}
+## get all old ref annot 
+old_ref <- existing_sample_info$reference_annot %>% unique()
+
+old_ref
+
+## update fct levels 
+updated_sample_info <- existing_sample_info %>% mutate(reference_annot =  fct_recode(reference_annot, 
+                                              "FungiDB-42_AnidulansFGSCA4" = "FungiDB-39_AnidulansFGSCA4"  ,
+                                              "FungiDB-42_CalbicansSC5314"  = "FungiDB-39_CalbicansSC5314" ,
+                                              "FungiDB-42_ScerevisiaeS288c" = "FungiDB-39_ScerevisiaeS288c"))
+
+
+## back up existing rds 
+# write_rds(existing_sample_info ,
+#           path =  "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_new/__sample_info.rds")
+
+
+## write new  rds 
+# write_rds(updated_sample_info ,
+#           path =  "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_new/sample_info.rds")
+
+```
+
+## update reference_annotation_to_expr_map.rds file  
+
+This file connects  species expression mat to their annotations by column `reference_annotation`. Therefore, if annotations get updated, column `reference_annotations` must get update. 
+
+## Let's have a look into `reference_annotation_to_expr_map.rds`
+
+
+```{r,eval=FALSE}
+existing_annot_to_expr_map <- readr::read_rds("/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/annotations/reference_annotation_to_expr_map.rds")
+
+existing_annot_to_expr_map 
+
+## update column `reference_annotation` by factor levels. 
+annot_to_expr_map_update <- existing_annot_to_expr_map %>% mutate(reference_annotation =  fct_recode(reference_annotation, 
+                                              "FungiDB-42_AnidulansFGSCA4" = "FungiDB-39_AnidulansFGSCA4"  ,
+                                              "FungiDB-42_CalbicansSC5314"  = "FungiDB-39_CalbicansSC5314" ,
+                                              "FungiDB-42_ScerevisiaeS288c" = "FungiDB-39_ScerevisiaeS288c"))
+
+
+## get backup of exisiting rds 
+# readr::write_rds(x = existing_annot_to_expr_map , 
+#                  path = "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/annotations/__reference_annotation_to_expr_map.rds" , compress = "gz")
+
+
+## write new rds 
+# readr::write_rds(x = annot_to_expr_map_update , 
+#                  path = "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/annotations/reference_annotation_to_expr_map.rds" , compress = "gz")
+
+```
+
+## Add new fpkm matrix in the fungiexperesz 
+
+```{r, eval=FALSE}
+new_added_species <- c("fumigatus" ,"niger" , "auris" ,"glabrata" ,"marneffei")
+
+existing_ref_annot  <- fungi_db_orgdb_derieved_go_data %>% dplyr::select(1,2) %>% unique() 
+
+map_df(new_added_species , function(x){
+  match_index <- grepl(x , existing_ref_annot$species) %>% which(. == TRUE)
+  existing_ref_annot %>%  slice( match_index)  
+})
+
+
+## Crude way to add new species entry 
+## 1)  get data from reference_annotation_to_expr_map.rds in to R 
+## 2)  copy it to clip board 
+## 3)  paste as tribble 
+## 4)  add new species manually to tribble 
+
+
+# existing_annot_to_expr_map <- readr::read_rds("/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/annotations/reference_annotation_to_expr_map.rds")
+
+## bkup_existing_annot_to_expr_map 
+# readr::write_rds(x = existing_annot_to_expr_map , "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/annotations/__reference_annotation_to_expr_map.rds")
+
+
+updated_annot_to_expr_map <- tibble::tribble(
+          ~reference_annotation,   ~expression_mat_data_file,
+   "FungiDB-42_AnidulansFGSCA4",   "a_nidulans_expr_mat.rds",
+   "FungiDB-42_CalbicansSC5314",   "c_albicans_expr_mat.rds",
+  "FungiDB-42_ScerevisiaeS288c", "s_cerevisiae_expr_mat.rds",
+  "FungiDB-42_AfumigatusAf293", "a_fumigatus_expr_mat.rds",
+  "FungiDB-42_AnigerCBS513-88", "a_niger_expr_mat.rds",
+  "FungiDB-42_CglabrataCBS138", "c_glabrata_expr_mat.rds",
+  "FungiDB-42_TmarneffeiATCC18224", "t_marneffei_expr_mat.rds",
+  "FungiDB-42_CaurisB8441", "c_auris_expr_mat.rds"
+  
+  )
+
+## write updated 
+# readr::write_rds(x = updated_annot_to_expr_map , "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/annotations/reference_annotation_to_expr_map.rds")
+
+
+```
+
+

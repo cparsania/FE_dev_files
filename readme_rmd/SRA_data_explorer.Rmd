@@ -1,0 +1,374 @@
+---
+title: "Prepare SRA data for FungiExpresZ"
+author: "Chirag Parsania"
+date: "7/3/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r , message=FALSE , warning=FALSE}
+library(tidyverse)
+library(dbplyr)
+```
+
+### This document is mainly for arranging SRA data and sample information for FungiExpresZ. It includes 
+  1. Prepare species wise expression mats and save them in to .rds files. 
+  2. Prepare sample infromation table and save it to .rds file. Sample information is basically meta data associated with each sra run.  
+    i) For example : sample description, genotype , strain , taxonid etc etc. 
+  3. Prepare expr data mats .rds to reference annotaion map .rds file. This object contains two columns.  
+    i) Name of reference annotation  
+    ii) Name of expr data mats .rds file  
+  4. Things to takecare while adding new data to FungiExpresZ
+
+
+
+## Part 1 : Prepare species wise gene expression data and save them in to .rds file.  
+Wide format data where rows are genes (first column geneNames) and columns are samples (first row : sample names)
+
+#### Deal with existing fungi db data.  
+Existing fungi db data are in the long format and therefore it has repetative gene names and sample names. Due to repeatativeness object size become large and it occupies larger memory. 
+  
+#### Data in wide format 
+
+```{r}
+load("/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_old/an_ca_sra_data_log2_fpkm3.RData")
+
+splt <- an_ca_sra_data_log2_fpkm3 %>% 
+  spread(sample_name , log2fpkm) %>% ## wide format 
+  group_by(org)  %>% 
+  tidyr::nest() %>%
+  mutate(data = purrr::map(.$data, ~(select_if(. , ~(!all( is.na (.) ))))) ) %>%
+  mutate(source = "chris_lab")
+
+splt %>% glimpse()
+```
+
+#### Add dee data (.rds already prepared) to `splt` object
+
+```{r}
+dee_wide <- read_rds("/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/dee_data/Scerevisiae/dee_wide.rds")
+
+splt2 <- splt %>% 
+  add_row(org = "s_cerevisiae", data  = list(dee_wide %>% as_tibble())  , source ="dee2")
+
+splt2 %>% glimpse()
+```
+
+#### Save species wise .rds files 
+
+```{r }
+## split data by species  into individual file
+save_location <- "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_new/"
+suffix = "_expr_mat"
+#map2(splt2$data ,  splt2$org , ~ readr::write_rds(.x  , paste(save_location , .y ,suffix,  ".rds" , sep = "")  , compress = "gz"))
+```
+
+#### OK.! Gene expression mats .rds prepared.
+
+### Check .rds object load time 
+``` {r}
+## check object load time  of each .rds files 
+file_locations <- "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_new/"
+rds_files <- list.files(path = file_locations , pattern = "*.rds" , full.names = T)
+names(rds_files) <- basename(rds_files)
+
+map(rds_files , function(x){
+  ss <- Sys.time()
+  read_rds(x)
+  paste(basename(x) , format(ss - Sys.time() , units ="auto"))
+})
+
+
+## check rds object size 
+map(rds_files , function(x){
+  oo <- read_rds(x)
+  paste(basename(x), format(object.size(oo) , units = "auto"))
+})
+```
+
+## Part 2: Prepare sample info object.  
+
+As mentioned earlier, sample info object is meta data about sra run. In FungiExpresZ, it will be used to make selection of sra data.  
+
+* Two major source will be used to gather the sample infor data. 
+    1. Information  manually downloaded from sra run selector page. For more detail refer another document **dee_data_explorer.html**
+    2. Information  obtained from **SRAmetadb.sqlite**.  
+ 
+ 
+#### Get sample infor from sra run selector data 
+
+
+#### Get query : sra_run_accession  
+
+```{r}
+## get sra_run_accession from expr data mats, which are saved in .rds file. 
+file_locations <- "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_new/"
+expr_data_mats_rds_files <- list.files(file_locations , pattern = "_expr_mat.rds" , full.names = T)
+
+query_sra_run_accession <- map(expr_data_mats_rds_files,  ~ read_rds(.x) %>% 
+                           colnames %>% .[-1] ) %>% 
+  unlist() %>% unique()
+  
+## 
+```
+
+####  Get sample run infor from sra run selector data
+```{r}
+
+## load rds 
+fungal_sra_run_info <- read_rds("/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRA_data_processing/sra_run_info/fungal_sra_run_info_table.rds")
+
+required_cols <- c("organism_2",
+                   "strain",
+                   "genotype",
+                   "center_name",
+                   "insert_size",
+                   "library_name",
+                   "library_layout",
+                   "load_date",
+                   "collection_date",
+                   "run",
+                   "bio_project",
+                   "bio_sample",
+                   "sample_name",
+                   "sra_sample",
+                   "sra_study")
+
+
+sample_info_from_fungal_sra_run_table <- fungal_sra_run_info %>% 
+  dplyr::filter(.data$run  %in%  !!query_sra_run_accession) %>% ## keep those only, which has run information given in the fungal_run_table
+  dplyr::select(required_cols) 
+
+```
+#### Download **SRAmetadb.sqlite** file 
+  + file is quite large (~60 GB). So, make sure you do not download again 
+
+```{r , eval = FALSE}
+# library(SRAdb)
+# sqlfile <- getSRAdbFile(destdir = "../../../SRAdb_sql_lite/") 
+# sra_con <- dbConnect(SQLite(),sqlfile)
+```
+
+
+    
+#### Let's have a look in to **SRAmetadb.sqlite** 
+```{r}
+### Get additional sra sample info from SRAmetadb.sqlite 
+
+sqlite_file <- "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/SRAdb_sql_lite/SRAmetadb.sqlite"
+con <- DBI::dbConnect(RSQLite::SQLite(), sqlite_file)
+db_tables <- dplyr::db_list_tables(con = con)
+print(db_tables)
+
+#### print columns of each table 
+cols_by_table <- map(set_names(1:13 , db_tables) , ~tbl(con, db_tables[.x]) %>% colnames ) %>% 
+  tibble(tbl = names(.) , cols = .) %>% 
+  unnest() 
+
+print(cols_by_table)
+
+```
+
+#### Get data from specific table  
+Data of interest are given in the table sra, sample and experiment 
+
+#### Table : sra
+```{r}
+
+## get additional sra info from sra-db --> sra table
+additional_sra_info_cols <- c("run_accession",
+                                 "updated_date",
+                                 "library_strategy",
+                                 "library_selection",
+                                 "library_layout",
+                                 "library_construction_protocol",
+                                 "description",
+                                 "study_title",
+                                 "study_abstract",
+                                 "study_description",
+                                 "sample_accession",
+                                 "submission_center",
+                                 "submission_lab",
+                                 "submission_date")
+
+## 
+sra_db_run_info <- tbl(con, db_tables[7]) %>% 
+  dplyr::select(additional_sra_info_cols) %>%
+  dplyr::filter(run_accession %in% !!query_sra_run_accession) %>%
+  collect()
+```
+
+#### Table : sample 
+
+```{r}
+## get sample info cols from sra-db ---> sample table 
+additional_sample_info_cols <- c("sample_accession" ,"taxon_id","scientific_name")
+
+## Table sample does not contain column run_accession but it has sample_accession. So, we will use sample_accession from previous table to fatch required data 
+
+sra_db_sample_info <- tbl(con, db_tables[6]) %>%
+  dplyr::select(additional_sample_info_cols) %>%
+  dplyr::filter(sample_accession %in% base::unique(sra_db_run_info$sample_accession)) %>%
+  collect()
+sra_db_sample_info %>% glimpse()
+```
+
+#### Table : experiment
+```{r}
+## get experiment  info cols from sra-db ---> experiment table 
+
+additional_experiment_info_cols <- c("sample_accession" ,"instrument_model")
+  
+## Like table sample , table experiment also does not contain column run_accession. So we will use column sample_accession from previous table to fatch the data 
+
+sra_db_experiment_info <- tbl(con, db_tables[2]) %>%
+  dplyr::select(additional_experiment_info_cols) %>%
+  dplyr::filter(sample_accession %in% base::unique(sra_db_run_info$sample_accession)) %>%
+  collect() %>% unique() %>% 
+  nest(instrument_model) %>% 
+  mutate(instrument_model =  map_chr(data , ~.x %>% pull(1) %>% 
+                            paste0(. , collapse = ","))) %>% dplyr::select(1,3)
+
+sra_db_experiment_info  %>% glimpse()
+```
+
+
+## Prepare final sample infor object  
+Combine all obove data into one and save it to .rds 
+
+```{r}
+
+## object 1: 
+sample_info_from_fungal_sra_run_table %>% glimpse()
+
+## object 2: 
+sra_db_run_info %>% glimpse()
+
+## object 3: 
+sra_db_sample_info %>% glimpse()
+
+## object 4: 
+sra_db_experiment_info %>% glimpse()
+
+
+sample_info_beta <- query_sra_run_accession %>% 
+  tibble(run_accession = . ) %>% 
+  left_join(sample_info_from_fungal_sra_run_table , by = c("run_accession" =  "run")) %>% 
+  left_join(sra_db_run_info , by = "run_accession") %>%
+  left_join(sra_db_sample_info , by = "sample_accession") %>%
+  left_join(sra_db_experiment_info , by = "sample_accession")
+
+sample_info_beta %>% glimpse() 
+
+sample_info_cols <-  c("taxon_id",
+                       "scientific_name",
+                       "strain",
+                       "study_title",
+                       "study_abstract",
+                       "genotype",
+                       "library_layout.y",
+                       "library_construction_protocol",
+                       "library_name",
+                       "library_selection",
+                       "library_strategy",
+                       "instrument_model",
+                       "insert_size",
+                       "submission_lab",
+                       "submission_center",
+                       "updated_date",
+                       "center_name",
+                       "run_accession",
+                       "sample_accession",
+                       "bio_project",
+                       "bio_sample")
+
+
+sample_info_beta_subset <- sample_info_beta %>% dplyr::select(sample_info_cols)
+
+```
+
+
+#### Problem : SRA-db does not provide scientific name for all sra run 
+
+Missing species information has been obtained from the reference genome against which  fastq mapped  and gene  expression values obtained.
+
+#### Get missing species from expression mats rds files 
+
+#### Map  expr_data_mats rds file name, species name & reference annot against run_accession 
+
+```{r}
+file_locations <- "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_new/"
+rds_files <- list.files(path = file_locations , pattern = "*expr_mat.rds" , full.names = T )
+names(rds_files) <- basename(rds_files)
+
+## get rds file to run_accession map 
+species_wise_accession <- map(rds_files , ~ read_rds(.x) %>% colnames %>% .[-1]) %>% 
+  tibble(data_mats_rds_file = names(.)  , run_accession = . ) %>% unnest()
+
+## tally counts
+species_wise_accession %>% group_by(data_mats_rds_file) %>% tally()
+
+##
+species_wise_accession %>% glimpse()
+
+### get rds data mats file names to species name & reference annot 
+rds_species_annot_manual_map <- tibble::tribble(
+          ~data_mats_rds_file,                   ~species,              ~reference_annot,
+    "a_nidulans_expr_mat.rds",    "Aspergillus nidulans",  "FungiDB-42_AnidulansFGSCA4",
+    "c_albicans_expr_mat.rds",         "Candida albicans",  "FungiDB-42_CalbicansSC5314",
+  "s_cerevisiae_expr_mat.rds", "Saccharomyces cerevisiae", "FungiDB-42_ScerevisiaeS288c",
+  "a_fumigatus_expr_mat.rds" ,"Aspergillus fumigatus ",  "FungiDB-42_AfumigatusAf293",
+  "a_niger_expr_mat.rds", "Aspergillus niger", "FungiDB-42_AnigerCBS513-88",
+  "c_glabrata_expr_mat.rds","Candida glabrata" , "FungiDB-42_CglabrataCBS138",
+  "t_marneffei_expr_mat.rds", "Talaromyces marneffei" ,"FungiDB-42_TmarneffeiATCC18224",
+  "c_auris_expr_mat.rds","Candida auris" , "FungiDB-42_CaurisB8441",
+  )
+
+### map run_accession 
+accession_to_annotation <- species_wise_accession %>% 
+  left_join(rds_species_annot_manual_map)
+  
+```
+
+#### Save final sample info in the .rds format
+```{r}
+
+sample_info_final <- accession_to_annotation %>% 
+  left_join(sample_info_beta_subset , by = "run_accession") %>% 
+  dplyr::select(-data_mats_rds_file) %>%
+  dplyr::select(-run_accession  , everything()) %>%
+  dplyr::select(species ,reference_annot , everything())
+
+sample_info_final %>% glimpse()
+
+readr::write_rds(sample_info_final,
+                 path = "/Users/chiragparsania/Documents/Projects/1_My_PhD/9_bioseqc/fungiexpresz/app/expression_mats_rds_files_new/sample_info.rds")
+
+```
+
+
+## Part 3.  Prepare reference annot to expr data mat .rds file  
+```{r,eval=FALSE}
+## prepare an object containing two columns 
+#1) reference  annot 
+#2) name of .rds file (organism wise species data)
+
+annot_to_expr_map <- tibble(reference_annotation = levels(fe_sra_info$reference_annotation) , 
+                           expression_mat_data_file = c("a_nidulans.rds" , "c_albicans.rds" , "s_cerevisiae.rds"))
+#readr::write_rds(x = annot_to_expr_map , "../../../SRA_data_processing/sra_run_info/reference_annotation_to_expr_map.rds" , compress = "gz")
+
+```
+
+
+## Things to take care when you add gene expression mats .rds in future. 
+###  1. Prepare wide format data 
+###  2. Confirm if it is new species or already exist in the database  
+###  3. If the species already present in the database, update existing .rds of respective species with new data  
+###  4. If the species is not there, make new .rds file. Save it with species_name.rds format in respective directory  
+###  5. In both case (new species or existing one), do not forget to update **sample_info.rds**  and **reference_annotation_to_expr_map.rds** files.  
+  
+  **NOTE** : What is **reference_annotation_to_expr_map.rds**? Needs explanation.
+
